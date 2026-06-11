@@ -221,6 +221,25 @@ func (e *EntryQueryBuilder) WithGloballyVisible() *EntryQueryBuilder {
 	return e
 }
 
+// WithAttentionLane applies deterministic reading-lane filters without adding
+// persistent product state. Users can steer routing by naming categories or
+// tags after a lane, while the fallback heuristics keep the feature useful for
+// existing subscriptions.
+func (e *EntryQueryBuilder) WithAttentionLane(lane string) *EntryQueryBuilder {
+	switch lane {
+	case model.AttentionLanePriority:
+		e.conditions = append(e.conditions, attentionPriorityCondition())
+	case model.AttentionLaneFastNews:
+		e.conditions = append(e.conditions, attentionFastNewsCondition())
+	case model.AttentionLaneSlowReads:
+		e.conditions = append(e.conditions, attentionSlowReadsCondition())
+	case model.AttentionLaneTechRadar:
+		e.conditions = append(e.conditions, attentionTechRadarCondition())
+	}
+
+	return e
+}
+
 // CountEntries count the number of entries that match the condition.
 func (e *EntryQueryBuilder) CountEntries() (count int, err error) {
 	query := `
@@ -451,6 +470,10 @@ func (e *EntryQueryBuilder) GetEntryIDs() ([]int64, error) {
 			feeds f
 		ON
 			f.id=e.feed_id
+		LEFT JOIN
+			categories c
+		ON
+			c.id=f.category_id
 		WHERE ` + e.buildCondition() + " " + e.buildSorting()
 
 	rows, err := e.store.db.Query(query, e.args...)

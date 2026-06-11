@@ -80,6 +80,9 @@
                         {{ end }}
                     </a>
                 </li>
+                <li {{ if eq .menu "lanes" }}class="active"{{ end }}>
+                    <a href="{{ routePath "/lanes" }}" data-page="lanes">{{ icon "entries" }}Lanes</a>
+                </li>
                 <li {{ if eq .menu "starred" }}class="active"{{ end }} title="{{ t "tooltip.keyboard_shortcuts" "g b" }}">
                     <a href="{{ routePath "/starred" }}" data-page="starred">{{ icon "star" }}{{ t "menu.starred" }}</a>
                 </li>

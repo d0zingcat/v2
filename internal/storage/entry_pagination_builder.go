@@ -107,6 +107,22 @@ func (e *entryPaginationBuilder) WithGloballyVisible() *entryPaginationBuilder {
 	return e
 }
 
+// WithAttentionLane applies the same lane filter used by EntryQueryBuilder.
+func (e *entryPaginationBuilder) WithAttentionLane(lane string) *entryPaginationBuilder {
+	switch lane {
+	case model.AttentionLanePriority:
+		e.conditions = append(e.conditions, attentionPriorityCondition())
+	case model.AttentionLaneFastNews:
+		e.conditions = append(e.conditions, attentionFastNewsCondition())
+	case model.AttentionLaneSlowReads:
+		e.conditions = append(e.conditions, attentionSlowReadsCondition())
+	case model.AttentionLaneTechRadar:
+		e.conditions = append(e.conditions, attentionTechRadarCondition())
+	}
+
+	return e
+}
+
 // Entries returns previous and next entries.
 func (e *entryPaginationBuilder) Entries() (*model.Entry, *model.Entry, error) {
 	tx, err := e.db.Begin()
