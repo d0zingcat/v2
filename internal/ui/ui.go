@@ -45,6 +45,11 @@ func Serve(store *storage.Storage, pool *worker.Pool) http.Handler {
 	mux.HandleFunc("GET /unread", handler.showUnreadPage)
 	mux.HandleFunc("GET /unread/entry/{entryID}", handler.showUnreadEntryPage)
 
+	// Attention lane pages.
+	mux.HandleFunc("GET /lanes", handler.showDefaultAttentionLanePage)
+	mux.HandleFunc("GET /lanes/{lane}", handler.showAttentionLanePage)
+	mux.HandleFunc("GET /lanes/{lane}/entry/{entryID}", handler.showAttentionLaneEntryPage)
+
 	// History pages.
 	mux.HandleFunc("GET /history", handler.showHistoryPage)
 	mux.HandleFunc("GET /history/entry/{entryID}", handler.showReadEntryPage)
