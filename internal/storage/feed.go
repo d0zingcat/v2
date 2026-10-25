@@ -32,12 +32,17 @@ func (l byStateAndName) Less(i, j int) bool {
 	return l.f[i].Title < l.f[j].Title
 }
 
-// FeedExists checks if the given feed exists.
-func (s *Storage) FeedExists(userID, feedID int64) bool {
+// FeedExists checks if the given feed exists. The returned error is
+// non-nil only for a genuine query/connection failure; a feed that doesn't
+// exist is reported as (false, nil), matching the underlying sql.ErrNoRows
+// case.
+func (s *Storage) FeedExists(userID, feedID int64) (bool, error) {
 	var result bool
 	query := `SELECT true FROM feeds WHERE user_id=$1 AND id=$2 LIMIT 1`
-	s.db.QueryRow(query, userID, feedID).Scan(&result)
-	return result
+	if err := s.db.QueryRow(query, userID, feedID).Scan(&result); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf(`store: unable to check if feed exists: %w`, err)
+	}
+	return result, nil
 }
 
 // CheckedAt returns when the feed was last checked.
@@ -51,12 +56,16 @@ func (s *Storage) CheckedAt(userID, feedID int64) (time.Time, error) {
 	return result, nil
 }
 
-// CategoryFeedExists returns true if the given feed exists and belongs to the given category.
-func (s *Storage) CategoryFeedExists(userID, categoryID, feedID int64) bool {
+// CategoryFeedExists returns true if the given feed exists and belongs to
+// the given category. The returned error is non-nil only for a genuine
+// query/connection failure; see FeedExists above for the same convention.
+func (s *Storage) CategoryFeedExists(userID, categoryID, feedID int64) (bool, error) {
 	var result bool
 	query := `SELECT true FROM feeds WHERE user_id=$1 AND category_id=$2 AND id=$3 LIMIT 1`
-	s.db.QueryRow(query, userID, categoryID, feedID).Scan(&result)
-	return result
+	if err := s.db.QueryRow(query, userID, categoryID, feedID).Scan(&result); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf(`store: unable to check if feed exists in category: %w`, err)
+	}
+	return result, nil
 }
 
 // FeedURLExists returns true if the given feed URL already exists for the user.
@@ -246,10 +255,11 @@ func (s *Storage) CreateFeed(feed *model.Feed) error {
 			disable_http2,
 			description,
 			proxy_url,
-			ignore_entry_updates
+			ignore_entry_updates,
+			language
 		)
 		VALUES
-			($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31)
+			($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32)
 		RETURNING
 			id
 	`
@@ -286,6 +296,7 @@ func (s *Storage) CreateFeed(feed *model.Feed) error {
 		feed.Description,
 		feed.ProxyURL,
 		feed.IgnoreEntryUpdates,
+		feed.Language,
 	).Scan(&feed.ID)
 	if err != nil {
 		return fmt.Errorf(`store: unable to create feed %q: %v`, feed.FeedURL, err)
@@ -369,9 +380,10 @@ func (s *Storage) UpdateFeed(feed *model.Feed) (err error) {
 			pushover_enabled=$36,
 			pushover_priority=$37,
 			proxy_url=$38,
-			ignore_entry_updates=$39
+			ignore_entry_updates=$39,
+			language=$40
 		WHERE
-			id=$40 AND user_id=$41
+			id=$41 AND user_id=$42
 	`
 	_, err = s.db.Exec(query,
 		feed.FeedURL,
@@ -413,6 +425,7 @@ func (s *Storage) UpdateFeed(feed *model.Feed) (err error) {
 		feed.PushoverPriority,
 		feed.ProxyURL,
 		feed.IgnoreEntryUpdates,
+		feed.Language,
 		feed.ID,
 		feed.UserID,
 	)

@@ -4,6 +4,8 @@
 package validator // import "miniflux.app/v2/internal/validator"
 
 import (
+	"log/slog"
+
 	"miniflux.app/v2/internal/locale"
 	"miniflux.app/v2/internal/model"
 	"miniflux.app/v2/internal/storage"
@@ -24,7 +26,23 @@ func ValidateFeedCreation(store *storage.Storage, userID int64, request *model.F
 		return locale.NewLocalizedError("error.feed_already_exists")
 	}
 
-	if !store.CategoryIDExists(userID, request.CategoryID) {
+	categoryExists, err := store.CategoryIDExists(userID, request.CategoryID)
+	if err != nil {
+		// *locale.LocalizedError (unlike *locale.LocalizedErrorWrapper elsewhere
+		// in this codebase) has no way to carry an underlying error, so a
+		// genuine backend failure here can't be distinguished from "category
+		// not found" in the value returned to the caller. Log it so the
+		// failure is at least observable, and fall back to the existing
+		// user-facing message rather than changing this function's public
+		// return type as part of this PR.
+		slog.Error("validator: unable to check if feed category exists",
+			slog.Int64("user_id", userID),
+			slog.Int64("category_id", request.CategoryID),
+			slog.Any("error", err),
+		)
+		return locale.NewLocalizedError("error.feed_category_not_found")
+	}
+	if !categoryExists {
 		return locale.NewLocalizedError("error.feed_category_not_found")
 	}
 
@@ -36,19 +54,27 @@ func ValidateFeedCreation(store *storage.Storage, userID int64, request *model.F
 		return locale.NewLocalizedError("error.feed_invalid_keeplist_rule")
 	}
 
+	if !IsValidURLRewriteRules(request.UrlRewriteRules) {
+		return locale.NewLocalizedError("error.feed_invalid_urlrewrite_rule")
+	}
+
 	if request.BlockFilterEntryRules != "" {
-		if err := isValidFilterRules(request.BlockFilterEntryRules, "block"); err != nil {
+		if err := IsValidFilterRules(request.BlockFilterEntryRules, "block"); err != nil {
 			return err
 		}
 	}
 
 	if request.KeepFilterEntryRules != "" {
-		if err := isValidFilterRules(request.KeepFilterEntryRules, "keep"); err != nil {
+		if err := IsValidFilterRules(request.KeepFilterEntryRules, "keep"); err != nil {
 			return err
 		}
 	}
 
-	if request.ProxyURL != "" && !urllib.IsAbsoluteURL(request.ProxyURL) {
+	if err := IsValidRewriteRules(request.RewriteRules); err != nil {
+		return err
+	}
+
+	if request.ProxyURL != "" && !urllib.IsValidProxyURL(request.ProxyURL) {
 		return locale.NewLocalizedError("error.invalid_feed_proxy_url")
 	}
 
@@ -88,7 +114,17 @@ func ValidateFeedModification(store *storage.Storage, userID, feedID int64, requ
 	}
 
 	if request.CategoryID != nil {
-		if !store.CategoryIDExists(userID, *request.CategoryID) {
+		categoryExists, err := store.CategoryIDExists(userID, *request.CategoryID)
+		if err != nil {
+			// See the identical rationale in ValidateFeedCreation above.
+			slog.Error("validator: unable to check if feed category exists",
+				slog.Int64("user_id", userID),
+				slog.Int64("category_id", *request.CategoryID),
+				slog.Any("error", err),
+			)
+			return locale.NewLocalizedError("error.feed_category_not_found")
+		}
+		if !categoryExists {
 			return locale.NewLocalizedError("error.feed_category_not_found")
 		}
 	}
@@ -105,24 +141,32 @@ func ValidateFeedModification(store *storage.Storage, userID, feedID int64, requ
 		}
 	}
 
+	if request.RewriteRules != nil {
+		if err := IsValidRewriteRules(*request.RewriteRules); err != nil {
+			return err
+		}
+	}
+
+	if request.UrlRewriteRules != nil {
+		if !IsValidURLRewriteRules(*request.UrlRewriteRules) {
+			return locale.NewLocalizedError("error.feed_invalid_urlrewrite_rule")
+		}
+	}
+
 	if request.BlockFilterEntryRules != nil && *request.BlockFilterEntryRules != "" {
-		if err := isValidFilterRules(*request.BlockFilterEntryRules, "block"); err != nil {
+		if err := IsValidFilterRules(*request.BlockFilterEntryRules, "block"); err != nil {
 			return err
 		}
 	}
 
 	if request.KeepFilterEntryRules != nil && *request.KeepFilterEntryRules != "" {
-		if err := isValidFilterRules(*request.KeepFilterEntryRules, "keep"); err != nil {
+		if err := IsValidFilterRules(*request.KeepFilterEntryRules, "keep"); err != nil {
 			return err
 		}
 	}
 
-	if request.ProxyURL != nil {
-		if *request.ProxyURL == "" {
-			return locale.NewLocalizedError("error.proxy_url_not_empty")
-		}
-
-		if !urllib.IsAbsoluteURL(*request.ProxyURL) {
+	if request.ProxyURL != nil && *request.ProxyURL != "" {
+		if !urllib.IsValidProxyURL(*request.ProxyURL) {
 			return locale.NewLocalizedError("error.invalid_feed_proxy_url")
 		}
 	}

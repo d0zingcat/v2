@@ -46,13 +46,13 @@ func (e *EntryQueryBuilder) WithoutContent() *EntryQueryBuilder {
 func (e *EntryQueryBuilder) WithSearchQuery(query string) *EntryQueryBuilder {
 	if query != "" {
 		nArgs := len(e.args) + 1
-		e.conditions = append(e.conditions, fmt.Sprintf("e.document_vectors @@ plainto_tsquery($%d)", nArgs))
+		e.conditions = append(e.conditions, fmt.Sprintf("e.document_vectors @@ websearch_to_tsquery($%d)", nArgs))
 		e.args = append(e.args, query)
 
 		// 0.0000001 = 0.1 / (seconds_in_a_day)
 
 		e.sortExpressions = append(e.sortExpressions,
-			fmt.Sprintf("ts_rank(document_vectors, plainto_tsquery($%d)) - extract (epoch from now() - published_at)::float * 0.0000001 DESC", nArgs),
+			fmt.Sprintf("ts_rank(document_vectors, websearch_to_tsquery($%d)) - extract (epoch from now() - published_at)::float * 0.0000001 DESC", nArgs),
 		)
 	}
 	return e
@@ -199,11 +199,19 @@ func (e *EntryQueryBuilder) WithSorting(column, direction string) *EntryQueryBui
 	return e
 }
 
-// WithLimit set the limit.
+// WithLimit sets the limit. A non-positive limit is clamped to
+// model.MaxEntryLimit so callers cannot request an unbounded result set.
 func (e *EntryQueryBuilder) WithLimit(limit int) *EntryQueryBuilder {
-	if limit > 0 {
-		e.limit = min(limit, model.MaxEntryLimit)
+	return e.WithLimitAndMaximum(limit, model.MaxEntryLimit)
+}
+
+// WithLimitAndMaximum sets the limit, capped at the given maximum.
+// A non-positive limit is clamped to the maximum.
+func (e *EntryQueryBuilder) WithLimitAndMaximum(limit, maximum int) *EntryQueryBuilder {
+	if limit <= 0 || limit > maximum {
+		limit = maximum
 	}
+	e.limit = limit
 	return e
 }
 
@@ -269,7 +277,7 @@ func (e *EntryQueryBuilder) GetEntry() (*model.Entry, error) {
 		return nil, nil
 	}
 
-	entries[0].Enclosures, err = e.store.GetEnclosures(entries[0].ID)
+	entries[0].Enclosures, err = e.store.EnclosuresByEntryID(entries[0].ID)
 	if err != nil {
 		return nil, err
 	}
@@ -284,10 +292,22 @@ func (e *EntryQueryBuilder) GetEntries() (model.Entries, error) {
 }
 
 // GetEntriesWithCount returns a list of entries and the total count of matching
-// rows (ignoring limit/offset) in a single query using a window function.
-// This avoids a separate CountEntries() round-trip.
+// rows, ignoring limit and offset. It uses a window function for non-empty pages
+// and falls back to a separate count when the requested offset returns no rows.
 func (e *EntryQueryBuilder) GetEntriesWithCount() (model.Entries, int, error) {
-	return e.fetchEntries(true)
+	entries, total, err := e.fetchEntries(true)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	if len(entries) == 0 && e.offset > 0 {
+		total, err = e.CountEntries()
+		if err != nil {
+			return nil, 0, err
+		}
+	}
+
+	return entries, total, nil
 }
 
 // fetchEntries is the shared implementation for GetEntries and GetEntriesWithCount.
@@ -319,10 +339,12 @@ func (e *EntryQueryBuilder) fetchEntries(withCount bool) (model.Entries, int, er
 			e.created_at,
 			e.changed_at,
 			e.tags,
+			e.language,
 			f.title as feed_title,
 			f.feed_url,
 			f.site_url,
 			f.description,
+			f.language,
 			f.checked_at,
 			f.category_id,
 			c.title as category_title,
@@ -389,10 +411,12 @@ func (e *EntryQueryBuilder) fetchEntries(withCount bool) (model.Entries, int, er
 			&entry.CreatedAt,
 			&entry.ChangedAt,
 			pq.Array(&entry.Tags),
+			&entry.Language,
 			&entry.Feed.Title,
 			&entry.Feed.FeedURL,
 			&entry.Feed.SiteURL,
 			&entry.Feed.Description,
+			&entry.Feed.Language,
 			&entry.Feed.CheckedAt,
 			&entry.Feed.Category.ID,
 			&entry.Feed.Category.Title,
@@ -444,7 +468,7 @@ func (e *EntryQueryBuilder) fetchEntries(withCount bool) (model.Entries, int, er
 	}
 
 	if e.fetchEnclosures && len(entryIDs) > 0 {
-		enclosures, err := e.store.GetEnclosuresForEntries(entryIDs)
+		enclosures, err := e.store.EnclosuresByEntryIDs(entryIDs)
 		if err != nil {
 			return nil, 0, fmt.Errorf("store: unable to fetch enclosures: %w", err)
 		}
@@ -485,16 +509,30 @@ func (e *EntryQueryBuilder) GetEntryIDs() ([]int64, error) {
 	var entryIDs []int64
 	for rows.Next() {
 		var entryID int64
-
-		err := rows.Scan(&entryID)
-		if err != nil {
+		if err := rows.Scan(&entryID); err != nil {
 			return nil, fmt.Errorf("store: unable to fetch entry row: %v", err)
 		}
-
 		entryIDs = append(entryIDs, entryID)
 	}
 
 	return entryIDs, nil
+}
+
+// GetEntryIDsWithCount returns a list of entry IDs and the total count of
+// matching rows (ignoring limit/offset). It uses two queries: one to count
+// all matching rows and one to fetch the paginated IDs.
+func (e *EntryQueryBuilder) GetEntryIDsWithCount() ([]int64, int, error) {
+	total, err := e.CountEntries()
+	if err != nil {
+		return nil, 0, err
+	}
+
+	entryIDs, err := e.GetEntryIDs()
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return entryIDs, total, nil
 }
 
 func (e *EntryQueryBuilder) contentColumn() string {
